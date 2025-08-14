@@ -35,4 +35,5 @@ month's AWS costs compared to the month before.
 Made available under the terms of the [MIT License].
 
 [.github/workflows/generate-monthly-summary.yaml]: .github/workflows/generate-monthly-summary.yaml
-[license]: LICENSE.md
+[daniel morris]: https://unfun.co
+[mit license]: LICENSE.md
