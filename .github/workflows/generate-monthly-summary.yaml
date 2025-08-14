@@ -1,0 +1,129 @@
+name: Monthly Summary
+
+on:
+  schedule:
+  - cron: '0 12 1 * *'
+  workflow_dispatch: { }
+
+jobs:
+  generate:
+    name: Generate
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Set dates
+      id: dates
+      run: |
+        LAST_MONTH=$(date -d "$(date +%Y-%m-01) -1 month" +"%B %Y")
+        MONTH_BEFORE_LAST=$(date -d "$(date +%Y-%m-01) -2 months" +"%B %Y")
+        echo "month_before_last=$MONTH_BEFORE_LAST" >> $GITHUB_OUTPUT
+        echo "last_month=$LAST_MONTH" >> $GITHUB_OUTPUT
+        echo "Month before last: $MONTH_BEFORE_LAST"
+        echo "Last month: $LAST_MONTH"
+    - name: Install the latest version of uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        ignore-empty-workdir: "true"
+        python-version: "3.13"
+    - name: Configure AWS credentials
+      id: credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: ${{ vars.AWS_REGION }}
+        output-credentials: true
+        role-duration-seconds: 900
+        role-session-name: ClaudeMonthlyCostExplorer
+        role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.AWS_CLAUDE_ROLE }}
+    - name: Generate the monthly report
+      id: report
+      uses: anthropics/claude-code-action@beta
+      with:
+        allowed_tools: >-
+          mcp__awslabs_cost-explorer__get_cost_and_usage,
+          mcp__awslabs_cost-explorer__get_cost_comparison_drivers,
+          mcp__awslabs_cost-explorer__get_cost_forecast,
+          mcp__awslabs_cost-explorer__get_dimension_values,
+          mcp__awslabs_cost-explorer__get_tag_values,
+          mcp__awslabs_cost-explorer__get_cost_and_usage_comparisons,
+          mcp__awslabs_cost-explorer__get_today_date
+        anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+        claude_env: |
+          AWS_ACCESS_KEY_ID: ${{ steps.credentials.outputs.aws-access-key-id }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.credentials.outputs.aws-session-token }}
+        direct_prompt: |
+          You are a cold, dry-humoured accountant.
+          Compare the AWS costs between ${{ steps.dates.outputs.month_before_last }}
+          and ${{ steps.dates.outputs.last_month }}, and summarize the
+          differences in a concise manner, avoiding emojis and exclamation marks.
+        mode: agent
+        model: claude-sonnet-4-20250514
+        mcp_config: |
+          {
+            "mcpServers": {
+              "awslabs.cost-explorer": {
+                "command": "uvx",
+                "args": ["awslabs.cost-explorer-mcp-server@latest"],
+                "env": {
+                  "FASTMCP_LOG_LEVEL": "ERROR"
+                },
+                "disabled": false,
+                "autoApprove": []
+              }
+            }
+          }
+        timeout_minutes: 5
+    - name: Extract the summary from the execution log
+      id: extract_summary
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs')
+          const executionFile = '${{ steps.report.outputs.execution_file }}'
+          const executionLog = JSON.parse(fs.readFileSync(executionFile, 'utf8'))
+
+          let summary = ''
+
+          // The last message from the assistant in the execution log should
+          // contain the summary.
+          for (let i = executionLog.length - 1; i >= 0; i--) {
+            if (executionLog[i].type === 'assistant') {
+              summary = executionLog[i].message.content[0].text
+              break
+            }
+          }
+
+          if (!summary) {
+            throw new Error('No summary found in the execution log.')
+          }
+
+          return summary
+    - name: Send Slack message
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "text": "AWS Cost Report",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "Monthly AWS Cost Report"
+                }
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": ${{ steps.extract_summary.outputs.result }}
+                }
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
