@@ -1,5 +1,8 @@
 # GitHub/Claude powered AWS billing analysis
 
+> [!NOTE]
+> This project is no longer maintained and won't receive further development.
+
 ## Getting started
 
 ### Examples
